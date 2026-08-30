@@ -23,6 +23,19 @@ npm run serve      # http://127.0.0.1:8080
 Any static host works for deployment, including GitHub Pages pointed at the
 repository root.
 
+### Testing on a phone
+
+The microphone needs a secure context, and `http://` on a LAN address is not
+one — a phone pointed at your laptop's IP will be refused mic access. Either
+deploy to any https host, or tunnel the local server:
+
+```sh
+npm run serve
+cloudflared tunnel --url http://localhost:8080   # or: ngrok http 8080
+```
+
+Then open the https URL the tunnel prints on the phone.
+
 ## How it measures
 
 1. **Onset detection.** Each animation frame the RMS of the last 2048 samples is
