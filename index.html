@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#16120E">
+<meta name="description" content="Tune a drum by ear-free measurement: tap next to each lug and DrumTuner reads the pitch, then tells you which rods to tighten or loosen.">
+<title>Drum Tuner</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%232A2219'/%3E%3Ccircle cx='16' cy='16' r='10' fill='%23EFE8DB'/%3E%3Ccircle cx='16' cy='3.5' r='2.5' fill='%23C99A45'/%3E%3Ccircle cx='16' cy='28.5' r='2.5' fill='%23C99A45'/%3E%3Ccircle cx='3.5' cy='16' r='2.5' fill='%23C99A45'/%3E%3Ccircle cx='28.5' cy='16' r='2.5' fill='%23C99A45'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;800&family=Archivo:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --stage:#16120E;
+    --stage-2:#1F1913;
+    --mylar:#EFE8DB;
+    --mylar-dim:#C9C0B0;
+    --brass:#C99A45;
+    --brass-dim:#8A6A2F;
+    --good:#57B48A;
+    --warn:#D9A44A;
+    --bad:#E05C4E;
+    --ink:#171310;
+    --display:'Big Shoulders Display','Oswald','Arial Narrow',system-ui,sans-serif;
+    --body:'Archivo',system-ui,-apple-system,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:radial-gradient(120% 90% at 50% 0%, var(--stage-2) 0%, var(--stage) 60%);
+    color:var(--mylar);
+    font-family:var(--body);
+    display:flex;flex-direction:column;align-items:center;
+    min-height:100dvh;
+  }
+  .wrap{
+    width:100%;max-width:430px;display:flex;flex-direction:column;gap:14px;
+    padding:calc(18px + env(safe-area-inset-top)) 16px calc(32px + env(safe-area-inset-bottom));
+  }
+  :focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  h1{
+    font-family:var(--display);font-weight:800;font-size:30px;
+    letter-spacing:.04em;text-transform:uppercase;color:var(--mylar);
+  }
+  h1 span{color:var(--brass)}
+  .status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mylar-dim)}
+  .status::before{content:"";width:9px;height:9px;border-radius:50%;background:#5a5148;flex:none}
+  .status.live::before{background:var(--good);box-shadow:0 0 8px var(--good)}
+
+  /* ---------- input level ---------- */
+  .level{height:3px;border-radius:2px;background:#2A2219;overflow:hidden}
+  .level i{display:block;height:100%;width:0;background:var(--brass);
+           transition:width .09s linear;transform-origin:left}
+  .level.hot i{background:var(--good)}
+
+  /* ---------- Drumhead ---------- */
+  .head-box{position:relative;display:flex;justify-content:center}
+  svg{width:100%;max-width:340px;height:auto;display:block}
+  .lug-hit{cursor:pointer}
+  .lug-label{font-family:var(--display);font-weight:700;font-size:15px}
+
+  /* ---------- Readout ---------- */
+  .readout{text-align:center;padding:6px 0 2px}
+  .hz{
+    font-family:var(--display);font-weight:800;font-size:64px;line-height:1;
+    color:var(--mylar);font-variant-numeric:tabular-nums;
+  }
+  .hz small{font-size:26px;font-weight:500;color:var(--mylar-dim);margin-left:4px}
+  .note{font-size:14px;color:var(--brass);letter-spacing:.12em;text-transform:uppercase;margin-top:4px;min-height:18px}
+  .prompt{font-size:13px;color:var(--mylar-dim);margin-top:6px;min-height:17px}
+  .prompt.hint{color:var(--warn)}
+
+  /* ---------- Verdict ---------- */
+  .verdict{
+    border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.45;
+    background:#221C15;border:1px solid #33291D;display:none;
+  }
+  .verdict.show{display:block}
+  .verdict .headline{
+    font-family:var(--display);font-weight:700;font-size:20px;
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;
+  }
+  .verdict.good .headline{color:var(--good)}
+  .verdict.warn .headline{color:var(--warn)}
+  .verdict.bad .headline{color:var(--bad)}
+  .verdict ul{list-style:none;margin-top:6px}
+  .verdict li{padding:2px 0;color:var(--mylar-dim)}
+  .verdict li b{color:var(--mylar)}
+
+  /* ---------- Controls ---------- */
+  .controls{display:flex;gap:10px}
+  button{
+    font-family:var(--body);font-weight:600;font-size:15px;border:none;border-radius:12px;
+    padding:14px 0;flex:1;cursor:pointer;transition:transform .06s ease;
+  }
+  button:active{transform:scale(.97)}
+  .primary{background:var(--brass);color:var(--ink)}
+  .primary.stop{background:#3A3129;color:var(--mylar)}
+  .ghost{background:transparent;color:var(--mylar-dim);border:1px solid #3A3129}
+
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .row label,.row .lbl{font-size:13px;color:var(--mylar-dim)}
+  select{
+    font-family:var(--body);font-weight:600;font-size:14px;color:var(--mylar);
+    background:#221C15;border:1px solid #3A3129;border-radius:10px;padding:9px 12px;
+    appearance:none;-webkit-appearance:none;
+  }
+  .seg{display:flex;background:#221C15;border-radius:10px;padding:3px;gap:3px}
+  .seg button{flex:none;padding:7px 13px;font-size:13px;border-radius:8px;background:transparent;color:var(--mylar-dim)}
+  .seg button[aria-pressed="true"]{background:var(--brass);color:var(--ink)}
+
+  details{border-top:1px solid #2A2219;padding-top:10px;font-size:13px;color:var(--mylar-dim);line-height:1.55}
+  summary{cursor:pointer;color:var(--brass);font-weight:600;font-size:13px;letter-spacing:.03em}
+  details p{margin-top:8px}
+  .err{color:var(--bad);font-size:13px;text-align:center;display:none}
+
+  .guess{font-size:13px;color:var(--mylar-dim);margin-top:4px;min-height:17px}
+  .guess b{color:var(--mylar)}
+
+  /* ---------- mic modal ---------- */
+  .modal-bg{
+    position:fixed;inset:0;background:rgba(10,8,6,.75);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;padding:24px;z-index:10;
+  }
+  .modal-bg.show{display:flex}
+  .modal{
+    background:#241D15;border:1px solid #3D3223;border-radius:16px;
+    max-width:360px;width:100%;padding:22px 20px;text-align:center;
+  }
+  .modal .mic-icon{font-size:34px;margin-bottom:8px}
+  .modal h2{
+    font-family:var(--display);font-weight:700;font-size:22px;
+    text-transform:uppercase;letter-spacing:.05em;color:var(--mylar);margin-bottom:8px;
+  }
+  .modal p{font-size:13.5px;color:var(--mylar-dim);line-height:1.55;margin-bottom:16px}
+  .modal .controls{display:flex;gap:10px}
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms !important;transition-duration:.001ms !important}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Drum<span>Tuner</span></h1>
+    <div class="status" id="statusDot"><span id="statusTxt">mic off</span></div>
+  </header>
+
+  <div class="level" id="level" aria-hidden="true"><i id="levelBar"></i></div>
+
+  <div class="row">
+    <label for="drumSel">Drum</label>
+    <select id="drumSel">
+      <option value="auto">Auto-detect</option>
+      <option value="snare">Snare (14&Prime;)</option>
+      <option value="tom8">8&Prime; tom</option>
+      <option value="tom10">10&Prime; tom</option>
+      <option value="tom12">12&Prime; tom</option>
+      <option value="tom13">13&Prime; tom</option>
+      <option value="floor14">14&Prime; floor tom</option>
+      <option value="floor16">16&Prime; floor tom</option>
+      <option value="kick">Kick</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <span class="lbl" id="lugSegLbl">Lugs on this drum</span>
+    <div class="seg" id="lugSeg" role="group" aria-labelledby="lugSegLbl"></div>
+  </div>
+
+  <div class="row">
+    <span class="lbl" id="sideSegLbl">Head</span>
+    <div class="seg" id="sideSeg" role="group" aria-labelledby="sideSegLbl"></div>
+  </div>
+
+  <div class="head-box">
+    <svg id="drum" viewBox="0 0 340 340" xmlns="http://www.w3.org/2000/svg"
+         role="group" aria-label="Drum head diagram. Select a lug to measure it."></svg>
+  </div>
+
+  <div class="readout">
+    <div class="hz" id="hzOut" aria-live="polite">&mdash; <small>Hz</small></div>
+    <div class="note" id="noteOut"></div>
+    <div class="guess" id="guessOut"></div>
+    <div class="prompt" id="promptOut">Press start, then tap the head about 1&Prime; in from each lug</div>
+  </div>
+
+  <div class="verdict" id="verdict" aria-live="polite"></div>
+
+  <div class="controls">
+    <button class="primary" id="startBtn">Start listening</button>
+    <button class="ghost" id="resetBtn">Reset taps</button>
+  </div>
+
+  <div class="err" id="errOut" role="alert"></div>
+
+  <details>
+    <summary>How to use this</summary>
+    <p><b>1.</b> Set the number of tension lugs on your drum (count the rods around the rim), and pick which head you are on &mdash; batter or reso. Each head keeps its own set of readings.</p>
+    <p><b>2.</b> Hold your phone 6&ndash;12&Prime; above the head. Tap firmly with a stick about 1&Prime; in from the rim, next to lug 1. The app grabs the pitch and moves to the next lug automatically. You can also tap a lug on the diagram to re-measure it.</p>
+    <p><b>3.</b> Resting one finger lightly in the center of the head while you tap makes the lug pitch cleaner to read.</p>
+    <p>A drum is &ldquo;in tune with itself&rdquo; when every lug rings at the same pitch. Green = matches the others, red = off. Higher than the rest &rarr; loosen that rod slightly; lower &rarr; tighten. Quarter-turns at a time.</p>
+    <p>Wait about a second between taps &mdash; the app analyses a short window of audio after each hit, and crowding them makes readings bleed together.</p>
+    <p>Your readings are saved on this device, so you can close the page and pick up where you left off.</p>
+    <p><b>Rough size guide</b> (lug-tap pitch, medium tuning): kick under 72 Hz &middot; 16&Prime; floor 72&ndash;105 &middot; 14&Prime; floor 105&ndash;130 &middot; 13&Prime; tom 130&ndash;160 &middot; 12&Prime; tom 160&ndash;195 &middot; 10&Prime; tom 195&ndash;235 &middot; snare 235+. Tuning changes everything, so a slack 12&Prime; can read like a 13&Prime; &mdash; treat the guess as a hint, not a fact.</p>
+  </details>
+</div>
+
+<div class="modal-bg" id="micModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="micTitle">
+    <div class="mic-icon" aria-hidden="true">&#127908;</div>
+    <h2 id="micTitle">Microphone access</h2>
+    <p>DrumTuner listens through your phone's mic to read the pitch of each tap. Audio is analyzed live on your device only &mdash; nothing is recorded or sent anywhere. Your browser will ask to confirm.</p>
+    <div class="controls">
+      <button class="ghost" id="micCancel">Not now</button>
+      <button class="primary" id="micAllow">Allow microphone</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- tuning constants ----------
+  const FMIN = 40, FMAX = 700;
+  const FFT_SIZE       = 16384; // ~341 ms window @48 kHz, ~371 ms @44.1 kHz
+  const CAPTURE_DELAY  = 170;   // ms after onset: skip the attack, analyse the ring
+  const LOCKOUT        = 700;   // ms between accepted hits; must exceed the analysis window
+                                // minus CAPTURE_DELAY so the previous hit is out of frame
+  const RMS_FLOOR      = 0.010; // absolute onset threshold
+  const ONSET_RATIO    = 2.0;   // a hit is a jump above the running background, not just a
+                                // loud moment — otherwise a drum that is still ringing keeps
+                                // re-triggering every time the lockout expires
+  const ENV_RISE       = 0.05;  // background envelope: rises slowly...
+  const ENV_FALL       = 0.25;  // ...but follows a decaying ring back down
+  const MIN_PEAK_DB    = -90;   // reject near-silence
+  const MIN_SNR_DB     = 10;    // peak must stand this far above the band's typical level
+  const STORE_KEY      = 'drumtuner.v1';
+
+  // ---------- state ----------
+  const SIDES = [['batter','Batter'],['reso','Reso']];
+  let lugCount = 6;
+  let side = 'batter';
+  let sets = { batter: [], reso: [] };   // hz per lug (null = not measured)
+  let activeLug = 0;
+  let running = false, starting = false;
+  let audioCtx = null, analyser = null, stream = null, srcNode = null, rafId = null;
+  let timeBuf = null, freqBuf = null;
+  let bgEnv = 0.002, lockoutUntil = 0, pendingCapture = null;
+  let armed = true;   // false once every lug is read; a lug must be picked to re-measure
+  let hintTimer = null, levelFrame = 0;
+  let drumType = 'auto';
+
+  const $ = id => document.getElementById(id);
+  const svg = $('drum');
+  const taps = () => sets[side];
+
+  // ---------- small helpers ----------
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  function median(a){
+    const s = [...a].sort((x, y) => x - y), m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  const measured = () => taps().filter(v => v != null);
+
+  // ---------- persistence ----------
+  function save(){
+    try{
+      localStorage.setItem(STORE_KEY, JSON.stringify({ lugCount, side, drumType, sets }));
+    }catch(e){ /* private mode / quota — measurements just won't persist */ }
+  }
+  function load(){
+    let raw;
+    try{ raw = localStorage.getItem(STORE_KEY); }catch(e){ return; }
+    if (!raw) return;
+    let d;
+    try{ d = JSON.parse(raw); }catch(e){ return; }
+    if (!d || typeof d !== 'object') return;
+
+    if (lugOptions.includes(d.lugCount)) lugCount = d.lugCount;
+    if (SIDES.some(([k]) => k === d.side)) side = d.side;
+    if (d.drumType === 'auto' || DRUM_TARGETS[d.drumType]) drumType = d.drumType;
+
+    for (const [k] of SIDES){
+      const arr = d.sets && Array.isArray(d.sets[k]) ? d.sets[k] : [];
+      sets[k] = Array.from({ length: lugCount }, (_, i) => {
+        const v = arr[i];
+        return typeof v === 'number' && isFinite(v) && v >= FMIN && v <= FMAX ? v : null;
+      });
+    }
+  }
+
+  // ---------- segmented controls ----------
+  const lugOptions = [4, 5, 6, 8, 10, 12];
+  const lugSeg = $('lugSeg');
+  lugOptions.forEach(n => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = n;
+    b.setAttribute('aria-label', `${n} lugs`);
+    b.onclick = () => {
+      if (n === lugCount) return;          // don't wipe readings on a no-op tap
+      lugCount = n;
+      resetTaps();                          // lug numbering changed, so old readings are meaningless
+      drawSegs();
+    };
+    lugSeg.appendChild(b);
+  });
+
+  const sideSeg = $('sideSeg');
+  SIDES.forEach(([key, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.onclick = () => {
+      if (key === side) return;
+      side = key;
+      activeLug = firstUnmeasured(0);
+      armed = taps().some(t => t == null);
+      drawSegs(); drawDrum(); updateVerdict(); updateGuess(); updatePrompt(); showLast();
+      save();
+    };
+    sideSeg.appendChild(b);
+  });
+
+  function drawSegs(){
+    [...lugSeg.children].forEach((b, i) =>
+      b.setAttribute('aria-pressed', String(lugOptions[i] === lugCount)));
+    [...sideSeg.children].forEach((b, i) =>
+      b.setAttribute('aria-pressed', String(SIDES[i][0] === side)));
+  }
+
+  // ---------- drumhead drawing ----------
+  const COLORS = { good:'#57B48A', warn:'#D9A44A', bad:'#E05C4E', measured:'#C99A45' };
+
+  function devColor(hz){
+    if (hz == null) return null;
+    const vals = measured();
+    if (vals.length < 2) return 'measured';
+    const ref = median(vals);
+    const d = Math.abs(hz - ref) / ref;
+    if (d < 0.015) return 'good';
+    if (d < 0.03)  return 'warn';
+    return 'bad';
+  }
+
+  function drawDrum(){
+    const cx = 170, cy = 170, R = 128;
+    const t = taps();
+    let s = '';
+    // hoop + head
+    s += `<circle cx="${cx}" cy="${cy}" r="${R + 18}" fill="#2A2219" stroke="#3D3223" stroke-width="3"/>`;
+    s += `<circle cx="${cx}" cy="${cy}" r="${R}" fill="#EFE8DB"/>`;
+    for (let r = R - 14; r > 18; r -= 22)
+      s += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#DDD4C3" stroke-width="1"/>`;
+    s += `<circle cx="${cx}" cy="${cy}" r="7" fill="#E2D9C8"/>`;
+
+    for (let i = 0; i < lugCount; i++){
+      const a = -Math.PI / 2 + i * 2 * Math.PI / lugCount;
+      const lx = cx + Math.cos(a) * (R + 18), ly = cy + Math.sin(a) * (R + 18);
+      const tx = cx + Math.cos(a) * (R - 26), ty = cy + Math.sin(a) * (R - 26);
+      const state = devColor(t[i]);
+      const fill = state ? COLORS[state] : '#4A3E2C';
+      const active = i === activeLug;
+      const label = t[i] != null
+        ? `Lug ${i + 1}, ${t[i].toFixed(0)} hertz. Select to re-measure.`
+        : `Lug ${i + 1}, not measured. Select to measure.`;
+
+      // tension rod
+      s += `<line x1="${cx + Math.cos(a) * R}" y1="${cy + Math.sin(a) * R}" x2="${lx}" y2="${ly}" stroke="#8A6A2F" stroke-width="3"/>`;
+      // lug casing (tappable)
+      s += `<g class="lug-hit" data-lug="${i}" role="button" tabindex="0" aria-label="${label}">`;
+      s += `<circle cx="${lx}" cy="${ly}" r="13" fill="${fill}" stroke="${active ? '#EFE8DB' : '#16120E'}" stroke-width="${active ? 3 : 2}"/>`;
+      s += `<text x="${lx}" y="${ly + 5}" text-anchor="middle" class="lug-label" fill="#16120E">${i + 1}</text>`;
+      s += `</g>`;
+      // hz label inside head
+      if (t[i] != null){
+        s += `<text x="${tx}" y="${ty + 4}" text-anchor="middle" font-family="Archivo, sans-serif" font-size="12" font-weight="600" fill="#5C5344">${t[i].toFixed(0)}</text>`;
+      } else if (active && running){
+        s += `<circle cx="${tx}" cy="${ty}" r="9" fill="none" stroke="#C99A45" stroke-width="2" stroke-dasharray="3 3">
+                <animateTransform attributeName="transform" type="rotate" from="0 ${tx} ${ty}" to="360 ${tx} ${ty}" dur="4s" repeatCount="indefinite"/>
+              </circle>`;
+      }
+    }
+    svg.innerHTML = s;
+    svg.querySelectorAll('.lug-hit').forEach(g => {
+      const pick = () => { activeLug = +g.dataset.lug; armed = true; drawDrum(); updatePrompt(); };
+      g.addEventListener('click', pick);
+      g.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); pick(); }
+      });
+    });
+  }
+
+  // ---------- note name ----------
+  function noteName(hz){
+    if (!hz) return '';
+    const n = Math.round(12 * Math.log2(hz / 440)) + 69;
+    const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const cents = Math.round(1200 * Math.log2(hz / (440 * Math.pow(2, (n - 69) / 12))));
+    return `${names[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1} ${cents >= 0 ? '+' : ''}${cents}&cent;`;
+  }
+
+  // ---------- drum type guess / targets ----------
+  // approximate lug-tap ranges, medium tuning
+  const DRUM_TARGETS = {
+    kick:   [50,  80,  'kick'],
+    floor16:[72,  105, '16&Prime; floor tom'],
+    floor14:[100, 132, '14&Prime; floor tom'],
+    tom13:  [125, 160, '13&Prime; tom'],
+    tom12:  [150, 195, '12&Prime; tom'],
+    tom10:  [185, 240, '10&Prime; tom'],
+    tom8:   [230, 290, '8&Prime; tom'],
+    snare:  [250, 400, '14&Prime; snare'],
+  };
+
+  function updateGuess(){
+    const vals = measured();
+    const out = $('guessOut');
+    if (!vals.length){ out.innerHTML = ''; return; }
+    const avg = mean(vals);
+
+    if (drumType !== 'auto'){
+      const [lo, hi, name] = DRUM_TARGETS[drumType];
+      if (avg >= lo && avg <= hi)
+        out.innerHTML = `<b>${avg.toFixed(0)} Hz</b> average &mdash; in the typical range for a ${name} (${lo}&ndash;${hi} Hz)`;
+      else if (avg < lo)
+        out.innerHTML = `<b>${avg.toFixed(0)} Hz</b> average &mdash; reads <b>low</b> for a ${name} (typical ${lo}&ndash;${hi} Hz). Fine if you like it fat; otherwise take every rod up evenly.`;
+      else
+        out.innerHTML = `<b>${avg.toFixed(0)} Hz</b> average &mdash; reads <b>high</b> for a ${name} (typical ${lo}&ndash;${hi} Hz). Fine if intentional; otherwise back every rod off evenly.`;
+      return;
+    }
+
+    const order = ['kick','floor16','floor14','tom13','tom12','tom10','tom8','snare'];
+    let best = null, bestDist = Infinity;
+    for (const k of order){
+      const [lo, hi, name] = DRUM_TARGETS[k];
+      const d = avg < lo ? lo - avg : avg > hi ? avg - hi : 0;
+      if (d < bestDist){ bestDist = d; best = name; }
+      if (d === 0) break;
+    }
+    out.innerHTML = `Sounds like a <b>${best}</b> <span style="opacity:.6">(ranges overlap &mdash; best guess)</span>`;
+  }
+
+  function updateVerdict(){
+    const v = $('verdict');
+    const done = taps().map((t, i) => ({ t, i })).filter(o => o.t != null);
+    if (done.length < 2){ v.className = 'verdict'; v.innerHTML = ''; return; }
+
+    const vals = done.map(o => o.t);
+    const ref = median(vals);
+    const spread = (Math.max(...vals) - Math.min(...vals)) / ref * 100;
+
+    const offenders = done
+      .map(o => ({ i: o.i, d: (o.t - ref) / ref * 100 }))
+      .filter(o => Math.abs(o.d) >= 1.5)
+      .sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+
+    const left = taps().filter(t => t == null).length;
+    const partial = left ? ` <span style="opacity:.7">(${left} lug${left > 1 ? 's' : ''} still unmeasured)</span>` : '';
+
+    let cls, head, body;
+    if (spread < 3){
+      cls = 'good'; head = 'In tune with itself';
+      body = `<li>Lug spread is <b>${spread.toFixed(1)}%</b> &mdash; nothing to fix. Typical pitch <b>${ref.toFixed(0)} Hz</b>.${partial}</li>`;
+    } else {
+      cls = spread < 6 ? 'warn' : 'bad';
+      head = spread < 6 ? 'Close &mdash; touch up a couple of lugs' : 'Needs tuning';
+      body = `<li>Spread across lugs: <b>${spread.toFixed(1)}%</b> (aim for under 3%). Typical pitch <b>${ref.toFixed(0)} Hz</b>.${partial}</li>`;
+      offenders.slice(0, 4).forEach(o => {
+        body += `<li><b>Lug ${o.i + 1}</b> is ${Math.abs(o.d).toFixed(1)}% ${o.d > 0 ? 'high &rarr; loosen' : 'low &rarr; tighten'} that rod a quarter-turn, then re-tap it.</li>`;
+      });
+    }
+    v.className = `verdict show ${cls}`;
+    v.innerHTML = `<div class="headline">${head}</div><ul>${body}</ul>`;
+  }
+
+  function updatePrompt(){
+    clearTimeout(hintTimer);
+    const p = $('promptOut');
+    p.classList.remove('hint');
+    const remaining = taps().filter(t => t == null).length;
+    p.textContent = !running
+      ? 'Press start, then tap the head about 1″ in from each lug'
+      : remaining === 0
+        ? 'All lugs measured — tap any lug on the diagram to re-check it'
+        : `Tap the head next to lug ${activeLug + 1}`;
+  }
+
+  function hint(msg){
+    const p = $('promptOut');
+    p.textContent = msg;
+    p.classList.add('hint');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(updatePrompt, 2200);
+  }
+
+  function showLast(){
+    const t = taps()[activeLug];
+    if (t != null){
+      $('hzOut').innerHTML = `${t.toFixed(1)} <small>Hz</small>`;
+      $('noteOut').innerHTML = noteName(t);
+    } else {
+      $('hzOut').innerHTML = '— <small>Hz</small>';
+      $('noteOut').textContent = '';
+    }
+  }
+
+  // ---------- audio ----------
+  async function start(){
+    if (running || starting) return;   // a double-tap must not open two contexts
+    starting = true;
+    try{
+      await openMic();
+    } finally {
+      starting = false;
+    }
+  }
+
+  async function openMic(){
+    // Create the context inside the user gesture, before any await, so Safari
+    // doesn't refuse to run it later.
+    try{
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }catch(e){
+      fail('This browser has no Web Audio support, so pitch detection is unavailable.');
+      return;
+    }
+
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ audio:{
+        echoCancellation:false, noiseSuppression:false, autoGainControl:false
+      }});
+    }catch(e){
+      teardownAudio();
+      fail(e && e.name === 'NotFoundError'
+        ? 'No microphone found on this device.'
+        : 'Microphone blocked. Allow mic access for this page in your browser settings, then try again.');
+      return;
+    }
+
+    // iOS/Safari hands back a suspended context after an await; without this the
+    // analyser only ever sees silence.
+    if (audioCtx.state === 'suspended'){
+      try{ await audioCtx.resume(); }catch(e){ /* fall through; loop will report silence */ }
+    }
+
+    srcNode = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    try{ analyser.fftSize = FFT_SIZE; }catch(e){ analyser.fftSize = 8192; }
+    analyser.smoothingTimeConstant = 0;
+    srcNode.connect(analyser);
+
+    timeBuf = new Float32Array(2048);
+    freqBuf = new Float32Array(analyser.frequencyBinCount);
+    bgEnv = 0.002;
+    lockoutUntil = 0;
+
+    running = true;
+    $('startBtn').textContent = 'Stop';
+    $('startBtn').classList.add('stop');
+    $('statusDot').classList.add('live');
+    $('statusTxt').textContent = 'listening';
+    $('errOut').style.display = 'none';
+    updatePrompt(); drawDrum();
+    loop();
+  }
+
+  function fail(msg){
+    const err = $('errOut');
+    err.style.display = 'block';
+    err.textContent = msg;
+  }
+
+  function teardownAudio(){
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (srcNode) try{ srcNode.disconnect(); }catch(e){}
+    if (audioCtx && audioCtx.state !== 'closed') audioCtx.close().catch(() => {});
+    audioCtx = analyser = stream = srcNode = null;
+    timeBuf = freqBuf = null;
+  }
+
+  function stop(){
+    running = false;
+    cancelAnimationFrame(rafId);
+    clearTimeout(pendingCapture);
+    pendingCapture = null;
+    teardownAudio();
+    $('startBtn').textContent = 'Start listening';
+    $('startBtn').classList.remove('stop');
+    $('statusDot').classList.remove('live');
+    $('statusTxt').textContent = 'mic off';
+    $('level').classList.remove('hot');
+    $('levelBar').style.width = '0%';
+    updatePrompt(); drawDrum();
+  }
+
+  function loop(){
+    if (!running) return;
+    rafId = requestAnimationFrame(loop);
+
+    analyser.getFloatTimeDomainData(timeBuf);
+    let sum = 0;
+    for (let i = 0; i < timeBuf.length; i++) sum += timeBuf[i] * timeBuf[i];
+    const rms = Math.sqrt(sum / timeBuf.length);
+    const now = performance.now();
+
+    // A hit is a sharp rise over the running background. Comparing against a
+    // fixed level instead would keep firing while the head is still ringing.
+    const threshold = Math.max(RMS_FLOOR, bgEnv * ONSET_RATIO);
+    const isHit = rms > threshold;
+    bgEnv += (rms - bgEnv) * (rms > bgEnv ? ENV_RISE : ENV_FALL);
+
+    if (++levelFrame % 3 === 0){
+      $('levelBar').style.width = Math.min(100, rms / threshold * 100).toFixed(0) + '%';
+      $('level').classList.toggle('hot', isHit);
+    }
+
+    if (isHit && armed && now > lockoutUntil && !pendingCapture){
+      lockoutUntil = now + LOCKOUT;                       // one reading per hit
+      pendingCapture = setTimeout(capture, CAPTURE_DELAY); // let the attack transient pass
+    }
+  }
+
+  function capture(){
+    pendingCapture = null;
+    if (!running) return;
+
+    analyser.getFloatFrequencyData(freqBuf);
+    const hzPerBin = audioCtx.sampleRate / analyser.fftSize;
+    const lo = Math.max(1, Math.floor(FMIN / hzPerBin));
+    const hi = Math.min(freqBuf.length - 2, Math.ceil(FMAX / hzPerBin));
+    if (hi <= lo) return;
+
+    let peak = lo, peakVal = -Infinity;
+    for (let i = lo; i <= hi; i++) if (freqBuf[i] > peakVal){ peakVal = freqBuf[i]; peak = i; }
+
+    if (!isFinite(peakVal) || peakVal < MIN_PEAK_DB){
+      hint('Too quiet to read — tap harder, or move the phone closer.');
+      return;
+    }
+    // The peak has to stand clear of the rest of the band, or it is just noise.
+    const band = freqBuf.slice(lo, hi + 1).filter(isFinite);
+    if (!band.length || peakVal - median(band) < MIN_SNR_DB){
+      hint('No clear pitch in that hit — tap nearer the lug and let the head ring.');
+      return;
+    }
+
+    // parabolic interpolation for sub-bin accuracy (values are already in dB)
+    const a = freqBuf[peak - 1], b = freqBuf[peak], c = freqBuf[peak + 1];
+    const denom = a - 2 * b + c;
+    let shift = denom !== 0 ? 0.5 * (a - c) / denom : 0;
+    if (!isFinite(shift)) shift = 0;
+    shift = Math.max(-0.5, Math.min(0.5, shift));   // a peak bin's true peak is within half a bin
+
+    const hz = (peak + shift) * hzPerBin;
+    if (!(hz >= FMIN && hz <= FMAX)) return;
+
+    registerHit(hz);
+  }
+
+  function firstUnmeasured(from){
+    const t = taps();
+    for (let k = 0; k < lugCount; k++){
+      const n = (from + k) % lugCount;
+      if (t[n] == null) return n;
+    }
+    return from % lugCount;
+  }
+
+  function registerHit(hz){
+    if (!armed) return;
+    if (navigator.vibrate) try{ navigator.vibrate(20); }catch(e){}
+    $('hzOut').innerHTML = `${hz.toFixed(1)} <small>Hz</small>`;
+    $('noteOut').innerHTML = noteName(hz);
+
+    taps()[activeLug] = hz;
+    activeLug = firstUnmeasured(activeLug + 1);   // advance to the next unmeasured lug
+    // Once the drum is fully measured, stop listening for taps so a stray hit
+    // can't quietly overwrite good readings. Picking a lug re-arms it.
+    armed = taps().some(t => t == null);
+    drawDrum(); updateVerdict(); updateGuess(); updatePrompt(); save();
+  }
+
+  // ---------- wiring ----------
+  function resetTaps(){
+    sets = { batter: Array(lugCount).fill(null), reso: Array(lugCount).fill(null) };
+    activeLug = 0;
+    armed = true;
+    $('hzOut').innerHTML = '— <small>Hz</small>';
+    $('noteOut').textContent = '';
+    $('guessOut').innerHTML = '';
+    $('verdict').className = 'verdict';
+    $('verdict').innerHTML = '';
+    drawDrum(); updatePrompt(); save();
+  }
+
+  let micExplained = false;
+  const modal = $('micModal');
+  const closeModal = () => modal.classList.remove('show');
+
+  $('startBtn').onclick = () => {
+    if (running) return stop();
+    if (!micExplained){ modal.classList.add('show'); $('micAllow').focus(); }
+    else start();
+  };
+  $('micAllow').onclick = () => { micExplained = true; closeModal(); start(); };
+  $('micCancel').onclick = closeModal;
+  modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  $('drumSel').onchange = e => { drumType = e.target.value; updateGuess(); save(); };
+  $('resetBtn').onclick = resetTaps;
+  window.addEventListener('pagehide', () => { if (running) stop(); });
+
+  // ---------- boot ----------
+  sets = { batter: Array(lugCount).fill(null), reso: Array(lugCount).fill(null) };
+  load();
+  activeLug = firstUnmeasured(0);
+  armed = taps().some(t => t == null);
+  drawSegs();
+  $('drumSel').value = drumType;
+  drawDrum(); updateVerdict(); updateGuess(); updatePrompt(); showLast();
+})();
+</script>
+</body>
+</html>
