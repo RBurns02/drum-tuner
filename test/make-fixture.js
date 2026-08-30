@@ -26,6 +26,56 @@ function tap(hz, seconds, { amp = 0.55, tau = 0.18 } = {}) {
   return out;
 }
 
+// Room noise that is NOT a drum hit. These are the things that were falsely
+// registering as taps: someone talking, a stick set down on the rim, a chair
+// scraping, an air-conditioning hum.
+function voice(seconds, { amp = 0.16, f0 = 130 } = {}) {
+  const n = Math.round(seconds * SR);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    // slow attack and a wobbling pitch: nothing like a stick transient
+    const env = Math.min(1, t / 0.08) * Math.min(1, (seconds - t) / 0.12);
+    const f = f0 * (1 + 0.06 * Math.sin(2 * Math.PI * 3.1 * t));
+    let v = 0;
+    for (let h = 1; h <= 6; h++) v += Math.sin(2 * Math.PI * f * h * t + h) / h;
+    out[i] = amp * env * v;
+  }
+  return out;
+}
+
+function clatter(seconds, { amp = 0.34 } = {}) {
+  // A stick dropped on the rim: sharp attack like a drum hit, but broadband
+  // rather than tonal, so only the spectral test can reject it.
+  const n = Math.round(seconds * SR);
+  const out = new Float32Array(n);
+  let lp = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    const env = Math.min(1, t / 0.0015) * Math.exp(-t / 0.09);
+    lp = lp * 0.6 + (Math.random() * 2 - 1) * 0.4;
+    out[i] = amp * env * lp;
+  }
+  return out;
+}
+
+function hum(seconds, { amp = 0.05, f0 = 60 } = {}) {
+  // Mains hum: always there, fades up rather than starting like an event.
+  const n = Math.round(seconds * SR);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    const env = Math.min(1, t / 0.5);
+    out[i] = amp * env * (Math.sin(2 * Math.PI * f0 * t) + 0.4 * Math.sin(2 * Math.PI * f0 * 2 * t));
+  }
+  return out;
+}
+
+function mix(buf, src, atSeconds) {
+  const start = Math.round(atSeconds * SR);
+  for (let i = 0; i < src.length && start + i < buf.length; i++) buf[start + i] += src[i];
+}
+
 function build(freqs, { lead = 1.2, gap = 1.6, tail = 4.0, noise = 0.0006, tau = 0.18 } = {}) {
   const total = Math.round((lead + freqs.length * gap + tail) * SR);
   const buf = new Float32Array(total);
@@ -72,6 +122,25 @@ const SCENARIOS = [
     opts: { gap: 1.6, tau: 0.18 },
   },
   {
+    // The room the app actually gets used in: talking, a stick dropped on the
+    // rim, a chair scrape, a hum under everything. Only the six taps may
+    // register. Anything else silently overwrites a lug and moves the user on.
+    name: 'noisy',
+    file: path.join(__dirname, 'fixture-noisy.wav'),
+    freqs: [200.0, 201.5, 199.0, 220.0, 200.5, 198.5],
+    opts: { gap: 1.9, tau: 0.18, noise: 0.004 },
+    // seconds are relative to the start of the file; taps land at 1.2 + k*1.9
+    interference: [
+      { at: 0.30, kind: 'voice',   sec: 0.55 },
+      { at: 2.25, kind: 'clatter', sec: 0.35 },
+      { at: 4.10, kind: 'voice',   sec: 0.70 },
+      { at: 6.05, kind: 'clatter', sec: 0.35 },
+      { at: 7.95, kind: 'voice',   sec: 0.50 },
+      { at: 9.85, kind: 'clatter', sec: 0.35 },
+      { at: 0.00, kind: 'hum',     sec: 16.0 },
+    ],
+  },
+  {
     // A tom left ringing, tapped briskly. The previous hit is still sounding
     // when the next one lands, and it rings on for seconds after the last lug.
     name: 'ringing',
@@ -81,8 +150,14 @@ const SCENARIOS = [
   },
 ];
 
+const NOISE_MAKERS = { voice, clatter, hum };
+
 function generate() {
-  for (const s of SCENARIOS) writeWav(s.file, build(s.freqs, s.opts));
+  for (const s of SCENARIOS) {
+    const buf = build(s.freqs, s.opts);
+    for (const n of s.interference || []) mix(buf, NOISE_MAKERS[n.kind](n.sec), n.at);
+    writeWav(s.file, buf);
+  }
 }
 
 if (require.main === module) {

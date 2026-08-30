@@ -40,11 +40,20 @@ async function openPage(browser, port) {
   const ctx = await browser.newContext({ permissions: ['microphone'] });
   const page = await ctx.newPage();
   const errors = [];
+  const accepted = [];
   page.on('pageerror', e => errors.push(String(e)));
+  await page.exposeFunction('__reading', hz => accepted.push(hz));
   await page.route('**/*', r =>
     new URL(r.request().url()).hostname === '127.0.0.1' ? r.continue() : r.abort());
   await page.goto(`http://127.0.0.1:${port}/`);
-  return { page, errors };
+  // Count every reading the app accepts, so a hit invented from room noise is
+  // caught even when it lands on a lug that a later real tap overwrites.
+  await page.evaluate(() => {
+    const hz = document.getElementById('hzOut');
+    new MutationObserver(() => window.__reading(hz.textContent.trim()))
+      .observe(hz, { childList: true, subtree: true, characterData: true });
+  });
+  return { page, errors, accepted };
 }
 
 const storedTaps = () => {
@@ -62,7 +71,7 @@ async function runScenario(scenario, port) {
   });
 
   try {
-    const { page, errors } = await openPage(browser, port);
+    const { page, errors, accepted } = await openPage(browser, port);
 
     await page.click(`#lugSeg button[aria-label="${scenario.freqs.length} lugs"]`);
     await page.click('#startBtn');
@@ -84,6 +93,16 @@ async function runScenario(scenario, port) {
       Math.max(m, typeof taps[i] === 'number' ? Math.abs(taps[i] - want) : Infinity), 0);
     check(`every lug read within ${TOLERANCE_HZ} Hz`, worst <= TOLERANCE_HZ,
       isFinite(worst) ? `worst ${worst.toFixed(2)} Hz` : 'a lug never read');
+
+    // One reading per tap: no phantom hits, and none of the real taps dropped.
+    check('one reading per tap, no more and no fewer',
+      accepted.length === scenario.freqs.length,
+      `${accepted.length} readings for ${scenario.freqs.length} taps`);
+
+    if (scenario.name === 'noisy') {
+      check('talking, clatter and a mains hum never register as taps',
+        accepted.length === scenario.freqs.length && worst <= TOLERANCE_HZ);
+    }
 
     if (scenario.name === 'ringing') {
       // The last tap rings for seconds after the drum is fully measured; those

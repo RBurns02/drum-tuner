@@ -206,7 +206,7 @@
     <p><b>1.</b> Set the number of tension lugs on your drum (count the rods around the rim), and pick which head you are on &mdash; batter or reso. Each head keeps its own set of readings.</p>
     <p><b>2.</b> Hold your phone 6&ndash;12&Prime; above the head. Tap firmly with a stick about 1&Prime; in from the rim, next to lug 1. The app grabs the pitch and moves to the next lug automatically. You can also tap a lug on the diagram to re-measure it.</p>
     <p><b>3.</b> Resting one finger lightly in the center of the head while you tap makes the lug pitch cleaner to read.</p>
-    <p>A drum is &ldquo;in tune with itself&rdquo; when every lug rings at the same pitch. Green = matches the others, red = off. Higher than the rest &rarr; loosen that rod slightly; lower &rarr; tighten. Quarter-turns at a time.</p>
+    <p>A drum is &ldquo;in tune with itself&rdquo; when every lug rings at the same pitch. Green = matches the others, red = off. Tension rods are normal right-hand threads: <b>clockwise tightens</b> and raises the pitch, <b>counter-clockwise loosens</b> and lowers it. A lug reading higher than the rest &rarr; quarter-turn counter-clockwise; lower &rarr; quarter-turn clockwise. Small turns, then re-tap.</p>
     <p>Wait about a second between taps &mdash; the app analyses a short window of audio after each hit, and crowding them makes readings bleed together.</p>
     <p>Your readings are saved on this device, so you can close the page and pick up where you left off.</p>
     <p><b>Rough size guide</b> (lug-tap pitch, medium tuning): kick under 72 Hz &middot; 16&Prime; floor 72&ndash;105 &middot; 14&Prime; floor 105&ndash;130 &middot; 13&Prime; tom 130&ndash;160 &middot; 12&Prime; tom 160&ndash;195 &middot; 10&Prime; tom 195&ndash;235 &middot; snare 235+. Tuning changes everything, so a slack 12&Prime; can read like a 13&Prime; &mdash; treat the guess as a hint, not a fact.</p>
@@ -231,18 +231,38 @@
 
   // ---------- tuning constants ----------
   const FMIN = 40, FMAX = 700;
-  const FFT_SIZE       = 16384; // ~341 ms window @48 kHz, ~371 ms @44.1 kHz
-  const CAPTURE_DELAY  = 170;   // ms after onset: skip the attack, analyse the ring
-  const LOCKOUT        = 700;   // ms between accepted hits; must exceed the analysis window
-                                // minus CAPTURE_DELAY so the previous hit is out of frame
+  const FFT_SIZE       = 8192;  // ~171 ms window @48 kHz, so the two captures below
+                                // barely overlap and give near-independent looks
+  const CAPTURE_A      = 110;   // ms after onset: past the attack, into the ring
+  const CAPTURE_B      = 275;   // ms after onset: a second look, later in the decay
+  const MATCH_TOL      = 0.02;  // the two looks must agree within this to be a real note
+  const LOCKOUT        = 700;   // ms between accepted hits
   const RMS_FLOOR      = 0.010; // absolute onset threshold
   const ONSET_RATIO    = 2.0;   // a hit is a jump above the running background, not just a
                                 // loud moment — otherwise a drum that is still ringing keeps
                                 // re-triggering every time the lockout expires
+  const ATTACK_RATIO   = 2.2;   // ...and it has to arrive suddenly. Speech and a chair
+                                // scrape swell over tens of ms; a stick does not.
+                                // Measured against the quieter of the last two frames: a
+                                // stick's rise can straddle a frame boundary and read low
+                                // against the frame immediately before it.
   const ENV_RISE       = 0.05;  // background envelope: rises slowly...
   const ENV_FALL       = 0.25;  // ...but follows a decaying ring back down
   const MIN_PEAK_DB    = -90;   // reject near-silence
-  const MIN_SNR_DB     = 10;    // peak must stand this far above the band's typical level
+  const MIN_SNR_DB     = 8;     // peak must stand this far above the band's typical level
+  const MIN_RISE_DB    = 10;    // ...and its rise above the resting room must stand this
+                                // far above the band's typical rise. A clatter lifts every
+                                // bin at once and lifts none of them out of the crowd; a
+                                // struck head lifts its own modes and little else.
+  const FLOOR_DB       = -140;  // getFloatFrequencyData reports -Infinity for a dead
+                                // bin; left raw it makes any rise against it infinite
+  const BG_INIT_MS     = 700;   // first moments after the mic opens: learn the room's
+                                // steady spectrum (mains hum, fans) before listening for
+                                // taps, so "risen above the room" means something
+  const BG_CREEP_DB    = 0.1;   // after that the estimate follows the per-bin minimum:
+                                // straight down to any new quiet, but climbing only this
+                                // fast (~3 dB/s), so a ringing head or a passing voice
+                                // cannot drag the room estimate up with it
   const STORE_KEY      = 'drumtuner.v1';
 
   // ---------- state ----------
@@ -254,9 +274,11 @@
   let running = false, starting = false;
   let audioCtx = null, analyser = null, stream = null, srcNode = null, rafId = null;
   let timeBuf = null, freqBuf = null;
-  let bgEnv = 0.002, lockoutUntil = 0, pendingCapture = null;
+  let bgEnv = 0.002, prevRms = 0, prevRms2 = 0, lockoutUntil = 0;
+  let bgSpec = null, bgReady = false, bgInitUntil = 0;  // resting spectrum of the room
+  let capTimers = [], capA = null, rejectReason = '';
   let armed = true;   // false once every lug is read; a lug must be picked to re-measure
-  let hintTimer = null, levelFrame = 0;
+  let hintTimer = null, levelFrame = 0, bgFrame = 0;
   let drumType = 'auto';
 
   const $ = id => document.getElementById(id);
@@ -388,6 +410,9 @@
         s += `<circle cx="${tx}" cy="${ty}" r="9" fill="none" stroke="#C99A45" stroke-width="2" stroke-dasharray="3 3">
                 <animateTransform attributeName="transform" type="rotate" from="0 ${tx} ${ty}" to="360 ${tx} ${ty}" dur="4s" repeatCount="indefinite"/>
               </circle>`;
+        // label sits radially inward of the target, clear of the lug and rim at any angle
+        const gx = cx + Math.cos(a) * (R - 52), gy = cy + Math.sin(a) * (R - 52);
+        s += `<text x="${gx}" y="${gy + 4}" text-anchor="middle" font-family="Archivo, sans-serif" font-size="10" font-weight="600" letter-spacing="1" fill="#8A6A2F">TAP HERE</text>`;
       }
     }
     svg.innerHTML = s;
@@ -476,7 +501,10 @@
       head = spread < 6 ? 'Close &mdash; touch up a couple of lugs' : 'Needs tuning';
       body = `<li>Spread across lugs: <b>${spread.toFixed(1)}%</b> (aim for under 3%). Typical pitch <b>${ref.toFixed(0)} Hz</b>.${partial}</li>`;
       offenders.slice(0, 4).forEach(o => {
-        body += `<li><b>Lug ${o.i + 1}</b> is ${Math.abs(o.d).toFixed(1)}% ${o.d > 0 ? 'high &rarr; loosen' : 'low &rarr; tighten'} that rod a quarter-turn, then re-tap it.</li>`;
+        const fix = o.d > 0
+          ? 'high &rarr; loosen it: quarter-turn <b>counter-clockwise</b>'
+          : 'low &rarr; tighten it: quarter-turn <b>clockwise</b>';
+        body += `<li><b>Lug ${o.i + 1}</b> is ${Math.abs(o.d).toFixed(1)}% ${fix}, then re-tap it.</li>`;
       });
     }
     v.className = `verdict show ${cls}`;
@@ -492,7 +520,7 @@
       ? 'Press start, then tap the head about 1″ in from each lug'
       : remaining === 0
         ? 'All lugs measured — tap any lug on the diagram to re-check it'
-        : `Tap the head next to lug ${activeLug + 1}`;
+        : `Tap the head about 1″ in from the rim, beside lug ${activeLug + 1}`;
   }
 
   function hint(msg){
@@ -559,9 +587,13 @@
     analyser.smoothingTimeConstant = 0;
     srcNode.connect(analyser);
 
-    timeBuf = new Float32Array(2048);
+    timeBuf = new Float32Array(1024);   // short window: sharp enough to time an attack
     freqBuf = new Float32Array(analyser.frequencyBinCount);
+    bgSpec  = new Float32Array(analyser.frequencyBinCount).fill(FLOOR_DB);
+    bgReady = false;
+    bgInitUntil = performance.now() + BG_INIT_MS;
     bgEnv = 0.002;
+    prevRms = prevRms2 = 0;
     lockoutUntil = 0;
 
     running = true;
@@ -591,8 +623,9 @@
   function stop(){
     running = false;
     cancelAnimationFrame(rafId);
-    clearTimeout(pendingCapture);
-    pendingCapture = null;
+    capTimers.forEach(clearTimeout);
+    capTimers = [];
+    capA = null;
     teardownAudio();
     $('startBtn').textContent = 'Start listening';
     $('startBtn').classList.remove('stop');
@@ -613,45 +646,93 @@
     const rms = Math.sqrt(sum / timeBuf.length);
     const now = performance.now();
 
-    // A hit is a sharp rise over the running background. Comparing against a
-    // fixed level instead would keep firing while the head is still ringing.
+    // A hit is a sudden rise over the running background. Comparing against a
+    // fixed level instead would keep firing while the head is still ringing;
+    // ignoring how fast it arrived would let voices and scrapes through.
     const threshold = Math.max(RMS_FLOOR, bgEnv * ONSET_RATIO);
-    const isHit = rms > threshold;
+    const isHit = rms > threshold && rms > Math.min(prevRms, prevRms2) * ATTACK_RATIO;
     bgEnv += (rms - bgEnv) * (rms > bgEnv ? ENV_RISE : ENV_FALL);
+    prevRms2 = prevRms;
+    prevRms = rms;
+
+    // Track what the room sounds like at rest, per frequency. For the first
+    // BG_INIT_MS the estimate absorbs whatever is steadily sounding — mains
+    // hum, a fan — as the room's floor. After that each bin follows its own
+    // running minimum: straight down to any new quiet, climbing only at
+    // BG_CREEP_DB per update, so anything that sounds — a hit, a ringing head,
+    // a voice — sits above the estimate instead of becoming part of it.
+    if (++bgFrame % 2 === 0){
+      analyser.getFloatFrequencyData(freqBuf);
+      const initing = now < bgInitUntil;
+      for (let i = 0; i < bgSpec.length; i++){
+        const v = isFinite(freqBuf[i]) ? freqBuf[i] : FLOOR_DB;
+        bgSpec[i] = initing ? Math.max(bgSpec[i], v)
+                  : v < bgSpec[i] ? v
+                  : Math.min(v, bgSpec[i] + BG_CREEP_DB);
+      }
+      bgReady = !initing;
+    }
 
     if (++levelFrame % 3 === 0){
       $('levelBar').style.width = Math.min(100, rms / threshold * 100).toFixed(0) + '%';
-      $('level').classList.toggle('hot', isHit);
+      $('level').classList.toggle('hot', rms > threshold);
     }
 
-    if (isHit && armed && now > lockoutUntil && !pendingCapture){
-      lockoutUntil = now + LOCKOUT;                       // one reading per hit
-      pendingCapture = setTimeout(capture, CAPTURE_DELAY); // let the attack transient pass
+    if (isHit && armed && bgReady && now > lockoutUntil && !capTimers.length){
+      lockoutUntil = now + LOCKOUT;   // one reading per hit
+      capA = null;
+      // Two looks at the tone, ~165 ms apart. A struck head still rings and
+      // reads the same both times; a scrape or a clatter does not.
+      capTimers.push(setTimeout(() => { capA = readPitch(); }, CAPTURE_A));
+      capTimers.push(setTimeout(finishCapture, CAPTURE_B));
     }
   }
 
-  function capture(){
-    pendingCapture = null;
-    if (!running) return;
-
+  // One look at the spectrum. Returns a frequency, or null with rejectReason set.
+  function readPitch(){
+    if (!running) return null;
     analyser.getFloatFrequencyData(freqBuf);
     const hzPerBin = audioCtx.sampleRate / analyser.fftSize;
     const lo = Math.max(1, Math.floor(FMIN / hzPerBin));
     const hi = Math.min(freqBuf.length - 2, Math.ceil(FMAX / hzPerBin));
-    if (hi <= lo) return;
+    if (hi <= lo) return null;
 
-    let peak = lo, peakVal = -Infinity;
-    for (let i = lo; i <= hi; i++) if (freqBuf[i] > peakVal){ peakVal = freqBuf[i]; peak = i; }
-
-    if (!isFinite(peakVal) || peakVal < MIN_PEAK_DB){
-      hint('Too quiet to read — tap harder, or move the phone closer.');
-      return;
+    // How far each bin has risen above the resting room. Judging bins by raw
+    // loudness would hand every reading to a hum or a fan.
+    const n = hi - lo + 1;
+    const rise = new Float32Array(n);
+    let loudest = -Infinity;
+    for (let i = lo; i <= hi; i++){
+      const v = isFinite(freqBuf[i]) ? freqBuf[i] : FLOOR_DB;
+      if (v > loudest) loudest = v;
+      rise[i - lo] = v - bgSpec[i];
     }
-    // The peak has to stand clear of the rest of the band, or it is just noise.
+
+    if (loudest < MIN_PEAK_DB){
+      rejectReason = 'Too quiet to read — tap harder, or move the phone closer.';
+      return null;
+    }
+
+    // A dropped stick or a scraped chair lifts the whole band at once, which can
+    // push a steady hum over any fixed threshold. What marks a struck head is
+    // that its own modes rise far more than everything around them, so measure
+    // each rise against the band's typical rise, not against zero.
+    const typicalRise = median(rise);
+    let peak = -1, peakVal = -Infinity;
+    for (let i = lo; i <= hi; i++){
+      const v = isFinite(freqBuf[i]) ? freqBuf[i] : FLOOR_DB;
+      // among the bins that genuinely stand out, take the loudest: the head's
+      // main mode rather than one of its weaker partials
+      if (rise[i - lo] - typicalRise >= MIN_RISE_DB && v > peakVal){ peakVal = v; peak = i; }
+    }
+    if (peak < 0){
+      rejectReason = 'That was room noise, not a drum hit — nothing recorded.';
+      return null;
+    }
     const band = freqBuf.slice(lo, hi + 1).filter(isFinite);
     if (!band.length || peakVal - median(band) < MIN_SNR_DB){
-      hint('No clear pitch in that hit — tap nearer the lug and let the head ring.');
-      return;
+      rejectReason = 'No clear pitch in that hit — tap nearer the lug and let the head ring.';
+      return null;
     }
 
     // parabolic interpolation for sub-bin accuracy (values are already in dB)
@@ -659,12 +740,30 @@
     const denom = a - 2 * b + c;
     let shift = denom !== 0 ? 0.5 * (a - c) / denom : 0;
     if (!isFinite(shift)) shift = 0;
-    shift = Math.max(-0.5, Math.min(0.5, shift));   // a peak bin's true peak is within half a bin
+    shift = Math.max(-0.5, Math.min(0.5, shift));   // the true peak is within half a bin
 
     const hz = (peak + shift) * hzPerBin;
-    if (!(hz >= FMIN && hz <= FMAX)) return;
+    if (!(hz >= FMIN && hz <= FMAX)) return null;
+    return hz;
+  }
 
-    registerHit(hz);
+  function finishCapture(){
+    capTimers = [];
+    if (!running) return;
+    rejectReason = '';
+    const a = capA, b = readPitch();
+    capA = null;
+    if (a == null || b == null){
+      hint(rejectReason || 'That did not read as a drum hit — nothing recorded.');
+      return;
+    }
+    // A struck head holds its pitch as it decays. Anything that does not is
+    // noise that happened to be loud.
+    if (Math.abs(a - b) / ((a + b) / 2) > MATCH_TOL){
+      hint('That did not ring steadily — nothing recorded. Tap again and let the head sing.');
+      return;
+    }
+    registerHit((a + b) / 2);
   }
 
   function firstUnmeasured(from){
