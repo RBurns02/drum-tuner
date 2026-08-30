@@ -5,20 +5,30 @@ const path = require('path');
 
 const SR = 48000;
 
-// Decaying tone with two inharmonic partials, roughly how a lug tap reads.
-// `tau` is the decay time constant: ~0.18 s for a damped head, ~0.6 s for a
-// tom left to ring.
-function tap(hz, seconds, { amp = 0.55, tau = 0.18 } = {}) {
+// Decaying tone built from partials, roughly how a drum tap reads. `tau` is
+// the decay time constant: ~0.18 s for a damped head, ~0.6 s for a tom left to
+// ring. Each partial is {r: frequency ratio, a: amplitude, tau: its own decay};
+// `glide` starts the pitch sharp by that fraction and lets it settle, the way a
+// freshly struck head does.
+const LUG_PARTIALS = [
+  { r: 1.00, a: 1.00 },
+  { r: 1.59, a: 0.35 },
+  { r: 2.14, a: 0.20 },
+];
+
+function tap(hz, seconds, { amp = 0.55, tau = 0.18, partials = LUG_PARTIALS, glide = 0 } = {}) {
   const n = Math.round(seconds * SR);
   const out = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const t = i / SR;
-    const env = Math.exp(-t / tau);
-    out[i] = amp * env * (
-      Math.sin(2 * Math.PI * hz * t) +
-      0.35 * Math.sin(2 * Math.PI * 1.59 * hz * t + 0.7) +
-      0.20 * Math.sin(2 * Math.PI * 2.14 * hz * t + 1.9)
-    ) / 1.55;
+  const norm = partials.reduce((sum, p) => sum + p.a, 0);
+  for (const p of partials) {
+    const ptau = p.tau || tau;
+    let phase = Math.random() * 2 * Math.PI;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      const f = hz * p.r * (1 + glide * Math.exp(-t / 0.12));
+      phase += 2 * Math.PI * f / SR;
+      out[i] += (amp * p.a / norm) * Math.exp(-t / ptau) * Math.sin(phase);
+    }
   }
   // 2 ms fade-in so the attack is not a click that smears the spectrum
   const fade = Math.round(0.002 * SR);
@@ -76,13 +86,16 @@ function mix(buf, src, atSeconds) {
   for (let i = 0; i < src.length && start + i < buf.length; i++) buf[start + i] += src[i];
 }
 
-function build(freqs, { lead = 1.2, gap = 1.6, tail = 4.0, noise = 0.0006, tau = 0.18 } = {}) {
+function build(freqs, { lead = 1.2, gap = 1.6, tail = 4.0, noise = 0.0006, tau = 0.18,
+                        glide = 0, perHitPartials = null } = {}) {
   const total = Math.round((lead + freqs.length * gap + tail) * SR);
   const buf = new Float32Array(total);
   for (let i = 0; i < total; i++) buf[i] = (Math.random() * 2 - 1) * noise;
   freqs.forEach((hz, k) => {
     const start = Math.round((lead + k * gap) * SR);
-    const t = tap(hz, tau * 6, { tau });
+    const partials = perHitPartials ? perHitPartials[k % perHitPartials.length] : LUG_PARTIALS;
+    const maxTau = partials.reduce((m, p) => Math.max(m, p.tau || tau), tau);
+    const t = tap(hz, maxTau * 6, { tau, partials, glide });
     for (let i = 0; i < t.length && start + i < total; i++) buf[start + i] += t[i];
   });
   return buf;
@@ -139,6 +152,28 @@ const SCENARIOS = [
       { at: 9.85, kind: 'clatter', sec: 0.35 },
       { at: 0.00, kind: 'hum',     sec: 16.0 },
     ],
+  },
+  {
+    // The user's own consistency test: the same spot in the middle of the drum,
+    // hit six times. A centre hit rings at the fundamental plus a partial an
+    // octave up, and which of the two is louder varies hit to hit (phone mics
+    // also shave bass). Every hit must read the fundamental — the readings
+    // flipping between 80 and 160 for identical hits is the failure this
+    // scenario pins down. The slight pitch settle of a fresh hit is included.
+    name: 'center',
+    file: path.join(__dirname, 'fixture-center.wav'),
+    freqs: [80.0, 80.0, 80.0, 80.0, 80.0, 80.0],
+    opts: {
+      gap: 1.6, tau: 0.5, tail: 4.0, glide: 0.02,
+      perHitPartials: [
+        [{ r: 1, a: 1.00, tau: 0.5 }, { r: 2.01, a: 0.55, tau: 0.3 }],  // fundamental wins
+        [{ r: 1, a: 0.40, tau: 0.5 }, { r: 2.01, a: 1.00, tau: 0.3 }],  // partial wins big
+        [{ r: 1, a: 0.80, tau: 0.5 }, { r: 2.01, a: 1.00, tau: 0.3 }],  // partial wins
+        [{ r: 1, a: 0.25, tau: 0.5 }, { r: 2.01, a: 1.00, tau: 0.3 }],  // bass badly shaved
+        [{ r: 1, a: 1.00, tau: 0.5 }, { r: 2.01, a: 0.90, tau: 0.3 }],  // near tie
+        [{ r: 1, a: 0.55, tau: 0.5 }, { r: 2.01, a: 1.00, tau: 0.3 }],  // partial wins
+      ],
+    },
   },
   {
     // A tom left ringing, tapped briskly. The previous hit is still sounding

@@ -38,20 +38,30 @@ Then open the https URL the tunnel prints on the phone.
 
 ## How it measures
 
-1. **Onset detection.** Each animation frame the RMS of the last 2048 samples is
-   compared against a running background envelope. A hit is a *rise* over that
-   background, not just a loud moment — a fixed threshold would keep
-   re-triggering while the head is still ringing.
-2. **Capture.** 170 ms after the onset the analyser's ~340 ms FFT window is
-   read, which skips the broadband attack transient and lands on the modal ring.
-   The lockout between accepted hits is longer than that window, so a previous
-   tap cannot bleed into the next reading.
-3. **Pitch.** The strongest bin between 40 and 700 Hz wins, refined by parabolic
-   interpolation across its neighbours for sub-bin accuracy. The peak has to
-   stand at least 10 dB above the band's median or the hit is rejected as
-   pitchless, and the user is told why.
-4. **Verdict.** Lugs are compared against the *median* of the measured lugs, so
-   one wildly loose rod doesn't drag the reference off.
+1. **Onset detection.** Each animation frame the RMS of the last 1024 samples is
+   compared against a running background envelope, and a hit must be a sudden
+   *jump* — 2.2x over the quieter of the two previous frames — not just a loud
+   moment. A ringing head can't re-trigger, and sounds that swell (speech, a
+   chair scrape) don't start a capture.
+2. **The room is subtracted.** For the first 0.7 s after the mic opens the app
+   learns the room's steady spectrum (mains hum, fans). After that each
+   frequency bin tracks its own running minimum — dropping instantly to any new
+   quiet, climbing only ~3 dB/s — so nothing that *sounds* can become part of
+   the background. A peak only counts if its rise above the room stands 10 dB
+   clear of the band's typical rise, which also rejects broadband clatter.
+3. **Three looks down the decay.** The spectrum is read 150, 330 and 550 ms
+   after the onset. A frequency counts only if all three looks contain it, never
+   louder than the look before — a struck head only decays, while a noise bump
+   is gone by the next look and a voice's pitch wobbles or swells. The looks are
+   unevenly spaced so a periodic vibrato can't sync with them. Each look's peaks
+   get parabolic interpolation for sub-bin accuracy.
+4. **The fundamental wins.** Among the partials that survive, if the loudest one
+   has a partner at half its frequency, the half is reported — so hitting the
+   same spot gives the same number even when two partials trade loudness from
+   hit to hit (phone mics shave bass, which otherwise decides that coin-flip).
+5. **Verdict.** Lugs are compared against the *median* of the measured lugs, so
+   one wildly loose rod doesn't drag the reference off, and the verdict says
+   which way to turn each offending rod.
 
 Once every lug has been read the detector disarms, so a stray hit can't
 overwrite good readings. Select a lug on the diagram to re-measure it.
@@ -76,6 +86,8 @@ Two fixtures are generated on demand (`npm run fixtures` to rebuild them):
 | scenario  | decay  | tap spacing | what it covers |
 |-----------|--------|-------------|----------------|
 | `damped`  | τ 0.18 s | 1.6 s | accuracy, the "which lug is off" verdict, persistence, reset, batter/reso separation |
+| `noisy`   | τ 0.18 s | 1.9 s | talking, a dropped stick, a chair scrape and a 60 Hz mains hum layered around the taps — exactly one reading per tap, none for the interference |
+| `center`  | τ 0.5 s  | 1.6 s | six identical centre hits whose fundamental and octave partial trade loudness — every reading must be the fundamental, never an octave flip |
 | `ringing` | τ 0.6 s  | 0.8 s | a tom left ringing: hits that overlap, and a long tail after the last lug that must not re-trigger |
 
 The tests use Playwright's full `chromium` channel rather than the default

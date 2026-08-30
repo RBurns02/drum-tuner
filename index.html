@@ -207,6 +207,7 @@
     <p><b>2.</b> Hold your phone 6&ndash;12&Prime; above the head. Tap firmly with a stick about 1&Prime; in from the rim, next to lug 1. The app grabs the pitch and moves to the next lug automatically. You can also tap a lug on the diagram to re-measure it.</p>
     <p><b>3.</b> Resting one finger lightly in the center of the head while you tap makes the lug pitch cleaner to read.</p>
     <p>A drum is &ldquo;in tune with itself&rdquo; when every lug rings at the same pitch. Green = matches the others, red = off. Tension rods are normal right-hand threads: <b>clockwise tightens</b> and raises the pitch, <b>counter-clockwise loosens</b> and lowers it. A lug reading higher than the rest &rarr; quarter-turn counter-clockwise; lower &rarr; quarter-turn clockwise. Small turns, then re-tap.</p>
+    <p>Hitting the <b>middle</b> of the head reads the drum's overall (lowest) note &mdash; useful for checking the drum's pitch, but it is the same everywhere on the head. Lug-to-lug comparison only works from taps near the rim.</p>
     <p>Wait about a second between taps &mdash; the app analyses a short window of audio after each hit, and crowding them makes readings bleed together.</p>
     <p>Your readings are saved on this device, so you can close the page and pick up where you left off.</p>
     <p><b>Rough size guide</b> (lug-tap pitch, medium tuning): kick under 72 Hz &middot; 16&Prime; floor 72&ndash;105 &middot; 14&Prime; floor 105&ndash;130 &middot; 13&Prime; tom 130&ndash;160 &middot; 12&Prime; tom 160&ndash;195 &middot; 10&Prime; tom 195&ndash;235 &middot; snare 235+. Tuning changes everything, so a slack 12&Prime; can read like a 13&Prime; &mdash; treat the guess as a hint, not a fact.</p>
@@ -233,10 +234,26 @@
   const FMIN = 40, FMAX = 700;
   const FFT_SIZE       = 8192;  // ~171 ms window @48 kHz, so the two captures below
                                 // barely overlap and give near-independent looks
-  const CAPTURE_A      = 110;   // ms after onset: past the attack, into the ring
-  const CAPTURE_B      = 275;   // ms after onset: a second look, later in the decay
-  const MATCH_TOL      = 0.02;  // the two looks must agree within this to be a real note
-  const LOCKOUT        = 700;   // ms between accepted hits
+  const LOOK_MS        = [150, 330, 550];
+                                // when to read the spectrum after an onset: past the attack,
+                                // then twice more down the decay. Three unevenly spaced looks
+                                // because a voice's pitch wobbles periodically — it can show
+                                // the same frequency to two looks that happen to sync with
+                                // the wobble, but not to three at these spacings
+  const MATCH_TOL      = 0.04;  // the looks must agree within this to be a real note —
+                                // a freshly struck head starts slightly sharp and settles,
+                                // so real hits drift a percent or two between looks
+  const OCTAVE_TOL     = 0.08;  // how close to exactly double counts as the same note
+  const SUBHARM_DB     = 25;    // a peak at half the winner's frequency within this many dB
+                                // is the note's true fundamental — report that instead, so
+                                // the reading can't flip an octave when the two partials
+                                // trade loudness from hit to hit (phone mics also shave
+                                // bass, which otherwise decides the coin-flip)
+  const MAX_CANDS      = 6;     // partials worth keeping per look
+  const DECAY_SLACK_DB = 1.5;   // a matched partial may be at most this much louder in the
+                                // second look — a struck head only decays, so anything
+                                // still growing 330 ms after its onset is not a drum
+  const LOCKOUT        = 750;   // ms between accepted hits
   const RMS_FLOOR      = 0.010; // absolute onset threshold
   const ONSET_RATIO    = 2.0;   // a hit is a jump above the running background, not just a
                                 // loud moment — otherwise a drum that is still ringing keeps
@@ -276,7 +293,7 @@
   let timeBuf = null, freqBuf = null;
   let bgEnv = 0.002, prevRms = 0, prevRms2 = 0, lockoutUntil = 0;
   let bgSpec = null, bgReady = false, bgInitUntil = 0;  // resting spectrum of the room
-  let capTimers = [], capA = null, rejectReason = '';
+  let capTimers = [], capLooks = [], rejectReason = '';
   let armed = true;   // false once every lug is read; a lug must be picked to re-measure
   let hintTimer = null, levelFrame = 0, bgFrame = 0;
   let drumType = 'auto';
@@ -625,7 +642,7 @@
     cancelAnimationFrame(rafId);
     capTimers.forEach(clearTimeout);
     capTimers = [];
-    capA = null;
+    capLooks = [];
     teardownAudio();
     $('startBtn').textContent = 'Start listening';
     $('startBtn').classList.remove('stop');
@@ -678,17 +695,29 @@
       $('level').classList.toggle('hot', rms > threshold);
     }
 
+    // Fully measured and hit anyway: say so, don't just sit there.
+    if (isHit && !armed && bgReady && now > lockoutUntil){
+      lockoutUntil = now + LOCKOUT;
+      hint('All lugs measured — nothing recorded. Tap a lug on the diagram to re-measure it.');
+    }
+
     if (isHit && armed && bgReady && now > lockoutUntil && !capTimers.length){
       lockoutUntil = now + LOCKOUT;   // one reading per hit
-      capA = null;
-      // Two looks at the tone, ~165 ms apart. A struck head still rings and
-      // reads the same both times; a scrape or a clatter does not.
-      capTimers.push(setTimeout(() => { capA = readPitch(); }, CAPTURE_A));
-      capTimers.push(setTimeout(finishCapture, CAPTURE_B));
+      capLooks = [];
+      rejectReason = '';
+      // Three looks at the tone down the decay. A struck head still rings and
+      // reads the same each time; a scrape, a clatter or a voice does not.
+      capTimers = LOOK_MS.map((ms, k) =>
+        setTimeout(() => {
+          capLooks.push(readPitch());
+          if (k === LOOK_MS.length - 1) finishCapture();
+        }, ms));
     }
   }
 
-  // One look at the spectrum. Returns a frequency, or null with rejectReason set.
+  // One look at the spectrum. Returns the hit's candidate partials — each a
+  // {hz, v} with sub-bin frequency and level — or null with rejectReason set.
+  // Which partial to report is decided across both looks in finishCapture.
   function readPitch(){
     if (!running) return null;
     analyser.getFloatFrequencyData(freqBuf);
@@ -716,54 +745,92 @@
     // A dropped stick or a scraped chair lifts the whole band at once, which can
     // push a steady hum over any fixed threshold. What marks a struck head is
     // that its own modes rise far more than everything around them, so measure
-    // each rise against the band's typical rise, not against zero.
+    // each rise against the band's typical rise, not against zero. Collect every
+    // local maximum that stands out: a real hit offers several partials.
     const typicalRise = median(rise);
-    let peak = -1, peakVal = -Infinity;
-    for (let i = lo; i <= hi; i++){
+    const cands = [];
+    for (let i = lo + 1; i < hi; i++){
+      if (rise[i - lo] - typicalRise < MIN_RISE_DB) continue;
       const v = isFinite(freqBuf[i]) ? freqBuf[i] : FLOOR_DB;
-      // among the bins that genuinely stand out, take the loudest: the head's
-      // main mode rather than one of its weaker partials
-      if (rise[i - lo] - typicalRise >= MIN_RISE_DB && v > peakVal){ peakVal = v; peak = i; }
+      const a = isFinite(freqBuf[i - 1]) ? freqBuf[i - 1] : FLOOR_DB;
+      const c = isFinite(freqBuf[i + 1]) ? freqBuf[i + 1] : FLOOR_DB;
+      if (v < a || v <= c) continue;
+
+      // parabolic interpolation for sub-bin accuracy (values are already in dB)
+      const denom = a - 2 * v + c;
+      let shift = denom !== 0 ? 0.5 * (a - c) / denom : 0;
+      if (!isFinite(shift)) shift = 0;
+      shift = Math.max(-0.5, Math.min(0.5, shift));   // the true peak is within half a bin
+      const hz = (i + shift) * hzPerBin;
+      if (hz >= FMIN && hz <= FMAX) cands.push({ hz, v });
     }
-    if (peak < 0){
+    if (!cands.length){
       rejectReason = 'That was room noise, not a drum hit — nothing recorded.';
       return null;
     }
+
+    cands.sort((x, y) => y.v - x.v);
     const band = freqBuf.slice(lo, hi + 1).filter(isFinite);
-    if (!band.length || peakVal - median(band) < MIN_SNR_DB){
+    if (!band.length || cands[0].v - median(band) < MIN_SNR_DB){
       rejectReason = 'No clear pitch in that hit — tap nearer the lug and let the head ring.';
       return null;
     }
-
-    // parabolic interpolation for sub-bin accuracy (values are already in dB)
-    const a = freqBuf[peak - 1], b = freqBuf[peak], c = freqBuf[peak + 1];
-    const denom = a - 2 * b + c;
-    let shift = denom !== 0 ? 0.5 * (a - c) / denom : 0;
-    if (!isFinite(shift)) shift = 0;
-    shift = Math.max(-0.5, Math.min(0.5, shift));   // the true peak is within half a bin
-
-    const hz = (peak + shift) * hzPerBin;
-    if (!(hz >= FMIN && hz <= FMAX)) return null;
-    return hz;
+    return cands.slice(0, MAX_CANDS);
   }
 
   function finishCapture(){
     capTimers = [];
     if (!running) return;
-    rejectReason = '';
-    const a = capA, b = readPitch();
-    capA = null;
-    if (a == null || b == null){
+    const looks = capLooks;
+    capLooks = [];
+    if (looks.some(l => l == null)){
       hint(rejectReason || 'That did not read as a drum hit — nothing recorded.');
       return;
     }
-    // A struck head holds its pitch as it decays. Anything that does not is
-    // noise that happened to be loud.
-    if (Math.abs(a - b) / ((a + b) / 2) > MATCH_TOL){
+
+    // A struck head holds its partials as it decays; a noise bump is gone by
+    // the next look, and a voice or scrape wanders or swells. A frequency
+    // counts only if every look contains it, never louder than the look
+    // before — drums only decay.
+    const common = [];
+    for (const c0 of looks[0]){
+      let hz = c0.hz, v = c0.v, dominant = c0 === looks[0][0], ok = true;
+      for (let k = 1; k < looks.length && ok; k++){
+        ok = false;
+        for (const c of looks[k]){
+          if (Math.abs(c.hz - hz) / ((c.hz + hz) / 2) <= MATCH_TOL &&
+              c.v - v <= DECAY_SLACK_DB){
+            hz = (hz * k + c.hz) / (k + 1);
+            v = c.v;
+            dominant = dominant && c === looks[k][0];
+            ok = true;
+            break;
+          }
+        }
+      }
+      if (ok) common.push({ hz, v: c0.v, dominant });
+    }
+    // A tap's whole mode structure survives the decay — two or more matched
+    // partials. Accept a single match only when it was the loudest thing in
+    // every look: the signature of one true mode with everything else damped.
+    if (!common.length || (common.length === 1 && !common[0].dominant)){
       hint('That did not ring steadily — nothing recorded. Tap again and let the head sing.');
       return;
     }
-    registerHit((a + b) / 2);
+
+    // Octave guard: if the loudest surviving partial has its fundamental — half
+    // its frequency, also present in every look — report the fundamental.
+    // Hitting the same spot must give the same number even when the two
+    // partials trade loudness from hit to hit.
+    let best = common[0];
+    for (const c of common) if (c.v > best.v) best = c;
+    let chosen = best;
+    for (const c of common){
+      if (Math.abs(c.hz - best.hz / 2) / (best.hz / 2) <= OCTAVE_TOL &&
+          best.v - c.v <= SUBHARM_DB &&
+          (chosen === best || c.v > chosen.v)) chosen = c;
+    }
+    registerHit(chosen.hz);
   }
 
   function firstUnmeasured(from){
